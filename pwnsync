@@ -1,0 +1,118 @@
+#!/bin/bash
+
+function help() {
+	echo -e "Usage: pwnsync [OPTIONS]\n"
+	echo -e "Synchronize files between a local directory and a remote server.\n"
+	echo -e "Options:"
+	echo -e "\t--src <path> Specify the local source directory"
+	echo -e "\t--dest <path> Specify the remote destination directory"
+	echo -e "\t--ssh <path> Specify the ssh key to use"
+	echo -e "\t--deploy Sync files from local to remote (no delete)"
+	echo -e "\t--daemon Enable automatic sync monitoring"
+	echo -e "\t--help Display this help and exit"	
+}
+
+function transfer_data() {
+	SSH_PARAMS="nil"
+
+	if [[ $4 == false && $5 == false ]]; then
+		echo "Please specify --deploy or --daemon" >&2
+		exit 1
+	fi
+	
+	if [ "$1" == "nil" ]; then
+		echo "Invalid source" >&2
+		exit 1
+	fi
+
+	if [ "$2" == "nil" ]; then
+		echo "Invalid destination" >&2
+		exit 1
+	fi
+
+	if [ "$3" != "nil" ]; then
+		SSH_PARAMS="ssh -i $3 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+	fi
+
+	if [ "$4" == true ]; then
+		echo "[INFO] SSH params: $SSH_PARAMS"
+		echo "[INFO] Connecting to server: $2"
+		echo "[INFO] Syncing files from $1 to $2"
+		if [ "$SSH_PARAMS" != "nil" ]; then
+			rsync -avzP -e "$SSH_PARAMS" "$1" "$2"
+		else
+			rsync -avzP "$1" "$2"
+		fi
+		echo "[INFO] File(s) sync completed"
+	fi
+
+	if [ "$5" == true ]; then
+		echo "Daemon mode..."
+		IFS=":" read -r server server_folder <<< "$1"
+		server=$(echo "$server" | tr -d '“”')
+		server_folder=$(echo "$server_folder" | tr -d '“”')
+		echo "Server: $server"
+		echo "Remote folder: $server_folder"
+		HASH_FILE="/tmp/remote_md5sum.txt"
+		ssh -i "$3" "$server" "find $server_folder -type f -newermt '-10 seconds' -exec md5sum {} \;" | sort > "$HASH_FILE.new"
+		mv "$HASH_FILE.new" "$HASH_FILE"
+		while true; do
+			ssh -i $3 "$server" "find $server_folder -type f -newermt '-10 seconds' -exec md5sum {} \;" | sort > "$HASH_FILE.new"
+			changes=$(diff "$HASH_FILE" "$HASH_FILE.new")
+			if [ -n "$changes" ]; then
+				echo "Detected changes..."
+				echo "$changes"
+				echo "Synching changes..."
+				if [ "$SSH_PARAMS" != "nil" ]; then
+            		rsync -avzP --delete -e "$SSH_PARAMS" "$1" "$2"
+        		else
+            		rsync -avzP --delete "$1" "$2"
+        		fi
+			fi
+			echo "No change detected..."
+			mv "$HASH_FILE.new" "$HASH_FILE"
+			sleep 3
+		done
+	fi
+}
+
+SOURCE="nil"
+DEST="nil"
+SSH="nil"
+DAEMON=false
+DEPLOY=false
+
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		--help)
+			help
+			exit 0
+			;;
+		--src)
+			SOURCE="$2"
+			shift 2
+			;;
+		--dest)
+			DEST="$2"
+			shift 2
+			;;
+		--ssh)
+			SSH="$2"
+			shift 2
+			;;
+		--deploy)
+			DEPLOY=true
+			shift
+			;;
+		--daemon)
+			DAEMON=true
+			shift
+			;;
+		*)
+			echo "Invalid option: $1" >&2
+			exit 1
+			;;
+	esac
+done
+
+transfer_data "$SOURCE" "$DEST" "$SSH" "$DEPLOY" "$DAEMON"
